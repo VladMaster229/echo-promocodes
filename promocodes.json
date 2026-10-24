@@ -1,10 +1,4 @@
 {
   "updatedAt": "2026-10-24",
-  "codes": [
-    {
-      "code": "ECHO-TEST-ONLY",
-      "rewards": "ТЕСТ — не является игровым промокодом",
-      "expiresAt": "Только для проверки ECHO"
-    }
-  ]
+  "codes": []
 }
