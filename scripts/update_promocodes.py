@@ -1,13 +1,9 @@
-import json
+
+import html
 import re
 import urllib.request
-from datetime import datetime, timezone
-from pathlib import Path
-from html import unescape
+from html.parser import HTMLParser
 
-DATA_FILE = Path("promocodes.json")
-
-# Public community-maintained Wuthering Waves code list
 SOURCES = [
     "https://www.pcgamesn.com/wuthering-waves/codes",
 ]
@@ -16,84 +12,78 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; ECHO-PromoCodes/1.0)"
 }
 
-# Only accept code-like strings from HTML code elements.
-CODE_PATTERN = re.compile(r"^[A-Z0-9]{5,24}$")
+
+class PageTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+        self.skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style", "noscript"):
+            self.skip += 1
+        elif tag in ("p", "li", "h2", "h3", "h4", "tr"):
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style", "noscript"):
+            self.skip = max(0, self.skip - 1)
+        elif tag in ("p", "li", "h2", "h3", "h4", "tr"):
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.parts.append(data)
 
 
-def fetch_codes(url):
+def inspect_source(url):
     request = urllib.request.Request(url, headers=HEADERS)
 
     with urllib.request.urlopen(request, timeout=20) as response:
-        html = response.read().decode("utf-8", errors="replace")
+        page = response.read().decode("utf-8", errors="replace")
 
-    candidates = re.findall(
-        r"<code\b[^>]*>(.*?)</code>",
-        html,
-        flags=re.IGNORECASE | re.DOTALL,
+    parser = PageTextParser()
+    parser.feed(page)
+
+    text = html.unescape(" ".join(parser.parts))
+    lines = [
+        " ".join(line.split())
+        for line in text.splitlines()
+    ]
+
+    lines = [line for line in lines if line]
+
+    keywords = (
+        "code",
+        "redeem",
+        "reward",
+        "active",
+        "expired",
+        "wuthering",
     )
 
-    found = set()
+    matches = [
+        line for line in lines
+        if any(word in line.lower() for word in keywords)
+    ]
 
-    for candidate in candidates:
-        value = unescape(re.sub(r"<[^>]+>", "", candidate)).strip().upper()
+    print(f"Source: {url}")
+    print(f"HTML size: {len(page)} characters")
+    print(f"Text lines: {len(lines)}")
+    print(f"Relevant lines: {len(matches)}")
 
-        if CODE_PATTERN.fullmatch(value):
-            found.add(value)
+    for line in matches[:30]:
+        print("PAGE:", line[:250])
 
-    return found
+    print("Diagnostic only: promocodes.json unchanged.")
 
 
 def main():
-    existing = {"updatedAt": None, "codes": []}
-
-    if DATA_FILE.exists():
-        existing = json.loads(DATA_FILE.read_text(encoding="utf-8"))
-
-    known = {
-        item["code"].upper(): item
-        for item in existing.get("codes", [])
-        if isinstance(item, dict) and isinstance(item.get("code"), str)
-    }
-
-    discovered = set()
-    successful_sources = 0
-
     for source in SOURCES:
         try:
-            codes = fetch_codes(source)
-            discovered.update(codes)
-            successful_sources += 1
-            print(f"{source}: found {len(codes)} candidates")
+            inspect_source(source)
         except Exception as error:
             print(f"Source unavailable: {source}: {error}")
-
-    if successful_sources == 0:
-        print("No sources available. Keeping existing data.")
-        return
-
-    new_codes = discovered - set(known)
-
-    for code in sorted(new_codes):
-        known[code] = {
-            "code": code,
-            "rewards": "Найден в публичном источнике — не проверен",
-        }
-
-    if not new_codes:
-        print("No new codes.")
-        return
-
-    result = {
-        "updatedAt": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        "codes": list(known.values()),
-    }
-
-    DATA_FILE.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-    print(f"Added {len(new_codes)} new candidate codes.")
 
 
 if __name__ == "__main__":
