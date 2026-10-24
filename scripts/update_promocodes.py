@@ -8,161 +8,141 @@ from pathlib import Path
 
 DATA_FILE = Path("promocodes.json")
 
-SOURCES = [
-    "https://www.pcgamesn.com/wuthering-waves/codes",
-]
+SOURCE = "https://www.pcgamesn.com/wuthering-waves/codes"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; ECHO-PromoCodes/1.0)"
+    "User-Agent": "Mozilla/5.0 (compatible; ECHO-PromoCodes/1.0)",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
-CODE_PATTERN = re.compile(r"^[A-Z0-9]{6,24}$")
+# Only Latin letters and digits, without spaces.
+CODE_PATTERN = re.compile(r"[A-Z0-9]{6,24}", re.ASCII)
 
-# Never publish our development test code.
 BLOCKED_CODES = {"ECHO-TEST-ONLY"}
 
+# First approved candidate from our diagnostic run.
+# Additional codes will be reviewed before publication.
+APPROVED_CODES = {"WUTHERINGGIFT"}
 
-class PageParser(HTMLParser):
+
+class TableParser(HTMLParser):
     def __init__(self):
         super().__init__()
-        self.lines = []
-        self.parts = []
+        self.rows = []
+        self.row = None
+        self.cell = None
         self.skip = 0
-
-    def flush(self):
-        text = " ".join(" ".join(self.parts).split())
-        if text:
-            self.lines.append(text)
-        self.parts = []
 
     def handle_starttag(self, tag, attrs):
         if tag in ("script", "style", "noscript"):
             self.skip += 1
-        elif tag in ("p", "li", "h2", "h3", "h4", "tr"):
-            self.flush()
+        elif self.skip == 0:
+            if tag == "tr":
+                self.row = []
+            elif tag in ("td", "th") and self.row is not None:
+                self.cell = []
 
     def handle_endtag(self, tag):
         if tag in ("script", "style", "noscript"):
             self.skip = max(0, self.skip - 1)
-        elif tag in ("p", "li", "h2", "h3", "h4", "tr"):
-            self.flush()
+        elif self.skip == 0:
+            if tag in ("td", "th") and self.cell is not None:
+                value = " ".join(" ".join(self.cell).split())
+                self.row.append(value)
+                self.cell = None
+            elif tag == "tr" and self.row is not None:
+                if self.row:
+                    self.rows.append(self.row)
+                self.row = None
 
     def handle_data(self, data):
-        if not self.skip:
-            self.parts.append(data)
-
-    def finish(self):
-        self.flush()
-        return self.lines
+        if self.skip == 0 and self.cell is not None:
+            self.cell.append(data)
 
 
-def fetch_codes(url):
-    request = urllib.request.Request(url, headers=HEADERS)
+def fetch_codes():
+    request = urllib.request.Request(SOURCE, headers=HEADERS)
 
     with urllib.request.urlopen(request, timeout=20) as response:
         page = response.read().decode("utf-8", errors="replace")
 
-    parser = PageParser()
+    parser = TableParser()
     parser.feed(page)
-    lines = parser.finish()
 
-    active = False
     results = {}
 
-    for line in lines:
-        lower = line.lower()
-
-        if "expired codes" in lower:
-            active = False
-            break
-
-        if "here are all the active" in lower:
-            active = True
+    for row in parser.rows:
+        if len(row) < 2:
             continue
 
-        if not active:
-            continue
-
-        if lower.startswith("code rewards"):
-            continue
-
-        # Expected table row: CODE + reward description.
-        match = re.match(
-            r"^([A-Z0-9]{6,24})\s+(.+)$",
-            line,
-        )
-
-        if not match:
-            continue
-
-        code = match.group(1).upper()
-        rewards = match.group(2).strip()
-
-        if code in BLOCKED_CODES:
-            continue
+        code = row[0].strip().upper()
+        rewards = row[1].strip()
 
         if not CODE_PATTERN.fullmatch(code):
             continue
 
-        if len(rewards) > 250:
+        if code in BLOCKED_CODES:
+            continue
+
+        if code not in APPROVED_CODES:
+            print(f"Candidate needs review: {code}")
+            continue
+
+        if not rewards:
             continue
 
         results[code] = {
             "code": code,
-            "rewards": rewards,
+            "rewards": rewards[:250],
         }
 
     return results
 
 
 def main():
+    try:
+        discovered = fetch_codes()
+    except Exception as error:
+        print(f"Source unavailable: {error}")
+        return
+
+    print(f"Approved codes found: {len(discovered)}")
+
+    for code in discovered:
+        print(f"Found: {code}")
+
     if DATA_FILE.exists():
         data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
     else:
         data = {"updatedAt": None, "codes": []}
 
-    known = {}
-
-    for item in data.get("codes", []):
-        if not isinstance(item, dict):
-            continue
-
-        code = str(item.get("code", "")).strip().upper()
-
-        if not code or code in BLOCKED_CODES:
-            continue
-
-        known[code] = item
-
-    original = {
-        str(item.get("code", "")).strip().upper()
+    existing = {
+        item["code"].upper(): item
         for item in data.get("codes", [])
         if isinstance(item, dict)
+        and isinstance(item.get("code"), str)
+        and CODE_PATTERN.fullmatch(item["code"].upper())
+        and item["code"].upper() in APPROVED_CODES
     }
 
-    discovered = {}
-
-    for source in SOURCES:
-        try:
-            found = fetch_codes(source)
-            discovered.update(found)
-            print(f"{source}: found {len(found)} codes")
-            for code in found:
-                print(f"Found candidate: {code}")
-        except Exception as error:
-            print(f"Source unavailable: {source}: {error}")
+    changed = False
 
     for code, item in discovered.items():
-        if code not in known:
-            known[code] = item
+        if code not in existing:
+            existing[code] = item
+            changed = True
 
-    if set(known) == original:
+    # Remove invalid or test entries if any remain.
+    if len(existing) != len(data.get("codes", [])):
+        changed = True
+
+    if not changed:
         print("No changes.")
         return
 
     result = {
         "updatedAt": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        "codes": list(known.values()),
+        "codes": list(existing.values()),
     }
 
     DATA_FILE.write_text(
@@ -170,7 +150,7 @@ def main():
         encoding="utf-8",
     )
 
-    print(f"Saved {len(known)} codes.")
+    print(f"Saved {len(existing)} approved codes.")
 
 
 if __name__ == "__main__":
