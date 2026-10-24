@@ -1,12 +1,9 @@
 
-import json
 import re
 import urllib.request
 from html.parser import HTMLParser
-from pathlib import Path
 
 SOURCE = "https://www.pcgamesn.com/wuthering-waves/codes"
-DATA_FILE = Path("promocodes.json")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; ECHO-PromoCodes/1.0)",
@@ -65,13 +62,23 @@ class PageParser(HTMLParser):
 
 
 def fetch_lines():
-    request = urllib.request.Request(SOURCE, headers=HEADERS)
+    request = urllib.request.Request(
+        SOURCE,
+        headers=HEADERS,
+    )
 
-    with urllib.request.urlopen(request, timeout=20) as response:
-        html = response.read().decode("utf-8", errors="replace")
+    with urllib.request.urlopen(
+        request,
+        timeout=20,
+    ) as response:
+        html = response.read().decode(
+            "utf-8",
+            errors="replace",
+        )
 
     parser = PageParser()
     parser.feed(html)
+
     return parser.get_lines()
 
 
@@ -100,7 +107,6 @@ def find_candidates(lines):
         ):
             break
 
-        # A code must appear at the beginning of a list entry.
         match = re.match(
             r"^([A-Za-z0-9]{6,24})(?=\s|:|–|—|-|$)",
             line,
@@ -111,10 +117,53 @@ def find_candidates(lines):
 
         code = match.group(1).upper()
 
-        if CODE_PATTERN.fullmatch(code) and code not in BLOCKED:
+        if (
+            CODE_PATTERN.fullmatch(code)
+            and code not in BLOCKED
+        ):
             candidates.add(code)
 
     return sorted(candidates)
+
+
+def print_diagnostics(lines):
+    print("=== PROMO SECTION DIAGNOSTICS ===")
+
+    keywords = (
+        "active wuthering waves codes",
+        "latest wuthering waves codes",
+        "here are all the active",
+        "wutheringgift",
+        "coderewards",
+        "senior",
+        "updated",
+        "expired codes",
+    )
+
+    interesting = [
+        i
+        for i, line in enumerate(lines)
+        if any(
+            word in line.lower()
+            for word in keywords
+        )
+    ]
+
+    shown = set()
+
+    for index in interesting:
+        start = max(0, index - 2)
+        end = min(len(lines), index + 3)
+
+        for pos in range(start, end):
+            if pos not in shown:
+                print(
+                    f"LINE {pos + 1}: "
+                    f"{lines[pos][:250]}"
+                )
+                shown.add(pos)
+
+    print("=== END DIAGNOSTICS ===")
 
 
 def main():
@@ -128,23 +177,19 @@ def main():
 
     candidates = find_candidates(lines)
 
+    print_diagnostics(lines)
+
     print(f"Candidates found: {len(candidates)}")
 
     for code in candidates:
         print(f"REVIEW: {code}")
 
     if not candidates:
-        print("No candidates. Showing relevant page lines:")
+        print("No candidates found.")
 
-        for line in lines:
-            lower = line.lower()
-            if (
-                "code" in lower
-                or "wutheringgift" in lower
-            ):
-                print("PAGE:", line[:200])
-
-    print("promocodes.json unchanged for safety.")
+    print(
+        "promocodes.json unchanged for safety."
+    )
 
 
 if __name__ == "__main__":
