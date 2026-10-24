@@ -119,7 +119,7 @@ def find_codes(lines):
         # Only accept a code attached to the site's
         # "Copy code" control.
         match = re.match(
-            r"^([A-Za-z0-9]{6,24})\s*Copy\s+code\b",
+            r"^([A-Za-z0-9]{6,24})\s+Copy\s+code(?=\d|\s|$)",
             line,
             flags=re.IGNORECASE,
         )
